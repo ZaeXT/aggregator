@@ -19,6 +19,7 @@ from collections import defaultdict
 import executable
 import utils
 import yaml
+from logger import logger
 
 CTX = ssl.create_default_context()
 CTX.check_hostname = False
@@ -147,7 +148,7 @@ def proxies_exists(proxy: dict, hosts: dict) -> bool:
     protocol = proxy.get("type", "")
     if protocol == "http" or protocol == "socks5":
         return True
-    elif protocol == "ss" or protocol == "trojan":
+    elif protocol in ["ss", "trojan", "anytls", "hysteria2"]:
         return any(p.get("password", "") == proxy.get("password", "") for p in proxies)
     elif protocol == "ssr":
         return any(
@@ -161,8 +162,6 @@ def proxies_exists(proxy: dict, hosts: dict) -> bool:
         if proxy.get("token", ""):
             return any(p.get("token", "") == proxy.get("token", "") for p in proxies)
         return any(p.get("uuid", "") == proxy.get("uuid", "") for p in proxies)
-    elif protocol == "hysteria2":
-        return any(p.get("password", "") == proxy.get("password", "") for p in proxies)
     elif protocol == "hysteria":
         key = "auth-str" if "auth-str" in proxy else "auth_str"
         value = proxy.get(key, "")
@@ -245,7 +244,7 @@ SSR_SUPPORTED_PROTOCOL = [
 
 VMESS_SUPPORTED_CIPHERS = ["auto", "aes-128-gcm", "chacha20-poly1305", "none"]
 
-SPECIAL_PROTOCOLS = set(["vless", "tuic", "hysteria", "hysteria2"])
+SPECIAL_PROTOCOLS = set(["vless", "tuic", "hysteria", "hysteria2", "anytls"])
 
 # xtls-rprx-direct and xtls-rprx-origin are deprecated and no longer supported
 # XTLS_FLOWS = set(["xtls-rprx-direct", "xtls-rprx-origin", "xtls-rprx-vision"])
@@ -469,7 +468,7 @@ def verify(item: dict, mihomo: bool = True) -> bool:
                 return False
         elif item["type"] == "snell":
             authentication = "psk"
-            if "version" in item and not item["version"].isdigit():
+            if "version" in item and not utils.is_number(item["version"]):
                 return False
 
             version = int(item.get("version", 1))
@@ -490,7 +489,15 @@ def verify(item: dict, mihomo: bool = True) -> bool:
         elif item["type"] == "http" or item["type"] == "socks5":
             authentication = "userpass"
         elif mihomo and item["type"] in SPECIAL_PROTOCOLS:
-            if item["type"] == "vless":
+            if item["type"] == "anytls":
+                if "alpn" in item and type(item["alpn"]) != list:
+                    return False
+
+                for property in ["idle-session-check-interval", "idle-session-timeout", "min-idle-session"]:
+                    if property in item and (not utils.is_number(item[property]) or int(item[property]) < 0):
+                        return False
+
+            elif item["type"] == "vless":
                 authentication = "uuid"
                 network = utils.trim(item.get("network", "tcp"))
 
@@ -501,8 +508,6 @@ def verify(item: dict, mihomo: bool = True) -> bool:
                     return False
                 if "flow" in item:
                     flow = utils.trim(item.get("flow", ""))
-
-                    # if flow and flow not in XTLS_FLOWS:
                     if flow and flow != "xtls-rprx-vision":
                         return False
                 if "ws-opts" in item:
@@ -531,6 +536,13 @@ def verify(item: dict, mihomo: bool = True) -> bool:
                         return False
                     if "public-key" not in reality_opts or type(reality_opts["public-key"]) != str:
                         return False
+
+                    content = utils.trim(reality_opts["public-key"])
+                    content += "=" * (4 - len(content) % 4)
+                    public_key = base64.urlsafe_b64decode(content)
+                    if len(public_key) != 32:
+                        return False
+
                     if "short-id" in reality_opts:
                         short_id = reality_opts["short-id"]
                         if type(short_id) != str:
@@ -665,6 +677,7 @@ def check(proxy: dict, api_url: str, timeout: int, test_url: str, delay: int, st
     try:
         proxy_name = urllib.parse.quote(proxy.get("name", ""), safe="")
     except:
+        logger.debug(f"encoding proxy name error, proxy: {proxy.get('name', '')}")
         return False
 
     base_url = f"http://{api_url}/proxies/{proxy_name}/delay?timeout={str(timeout)}&url="
@@ -679,10 +692,12 @@ def check(proxy: dict, api_url: str, timeout: int, test_url: str, delay: int, st
         targets.append(random.choice(DOWNLOAD_URL))
     try:
         alive, allowed = True, False
+        trace = os.getenv("LOG_LEVEL_DEBUG", "").lower() in ["true", "1"]
+
         for target in targets:
             target = urllib.parse.quote(target)
             url = f"{base_url}{target}"
-            content = utils.http_get(url=url, retry=2, interval=interval)
+            content = utils.http_get(url=url, retry=2, interval=interval, trace=trace)
             try:
                 data = json.loads(content)
             except:
@@ -718,10 +733,11 @@ def check(proxy: dict, api_url: str, timeout: int, test_url: str, delay: int, st
                         if data.get("delay", -1) > 0:
                             proxy["name"] = f"{proxy_name}{utils.CHATGPT_FLAG}"
                 except Exception:
-                    pass
+                    logger.debug(f"check for OpenAI failed, proxy: {proxy.get('name')}, message: {str(e)}")
 
         return alive
-    except:
+    except Exception as e:
+        logger.debug(f"check failed, proxy: {proxy.get('name')}, message: {str(e)}")
         return False
 
 
