@@ -369,8 +369,6 @@ emoji = "🇲🇺"
 
 
 [[emoji]]
-<<<<<<< HEAD
-=======
 match = "(Guatemala|危地马拉)"
 emoji = "🇬🇹"
 
